@@ -1,0 +1,36 @@
+Hi! 
+
+This is a super simple script - just feed it a spreadsheet file, it will read it and spit out tasks which are overdue or due today.
+
+I have included a sample tasks spreadsheet file. Edit to suit your needs. You can add or remove worksheets in the file but if you do this youll have to edit
+You can add or remove worksheets in the file but if you do this once you have run the script youll have to save new settings.
+
+
+SETUP:
+
+Run the included "setup.bat" file, this will handle (almost) everything with the following options. 
+
+Option 1 - Full setup:
+It will fetch and prompt you to install Python 3.10
+It will then run a python script to test for and install all the associated python modules needed.
+It will then ask if you wish to run the task monitor python file at windows startup - up to you whether you do this.
+It will then ask if you wish to run the script straight away - this is recommended to setup all the settings.
+
+Option 2 - Python Setup:
+It will fetch and prompt you to install Python 3.10
+It will then run a python script to test for and install all the associated python modules needed.
+
+Option 3 - Python module setup only:
+It will only run the python script to test for and install all the associated python modules needed. (recommended for if there are any issues with modules)
+
+Option 4 - Activate script on Windows Startup:
+This runs only the short script to put a registry entry to your python file.
+
+Option 5 - Remove script from Windows Startup:
+This is an undo for option 4.
+
+Option 6 - Edit script settings:
+If you have already run the script and created settings but now you want to edit them.
+
+
+
