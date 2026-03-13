@@ -48,18 +48,24 @@ function Get-DueTasks {
         [array]$Data,
         [string]$DateColumn,
         [string]$DescriptionColumn,
-        [string]$worksheetName
+        [string]$worksheetName,
+        [int]$LookAheadDays = -1
     )
 
     $today = Get-Date -Format 'yyyy-MM-dd'
     $todayDate = [DateTime]::Parse($today).Date
     $dueTasks     = [System.Collections.Generic.List[hashtable]]::new()
     $upcomingTasks = [System.Collections.Generic.List[hashtable]]::new()
-    switch ($worksheetName) {
-        "Weekly Tasks" {$dueSoon = $todayDate.AddDays(1)}
-        "Annual Tasks" {$dueSoon = $todayDate.AddDays(28)}
-        "6-Monthly Tasks" {$dueSoon = $todayDate.AddDays(28)}
-        default {$dueSoon = $todayDate.AddDays(7)}
+
+    if ($LookAheadDays -ge 0) {
+        $dueSoon = $todayDate.AddDays($LookAheadDays)
+    } else {
+        switch -Wildcard ($worksheetName) {
+            "*Weekly*"    { $dueSoon = $todayDate.AddDays(1) }
+            "*Annual*"    { $dueSoon = $todayDate.AddDays(28) }
+            "*6-Monthly*" { $dueSoon = $todayDate.AddDays(28) }
+            default       { $dueSoon = $todayDate.AddDays(7) }
+        }
     }
 
     $headers = $Data[0]
@@ -119,6 +125,56 @@ function Get-DueTasks {
     return @{
         Due      = @($dueTasks)
         Upcoming = @($upcomingTasks)
+    }
+}
+
+
+function Get-BankHolidays {
+    param(
+        [string]$Region = 'england-and-wales'
+    )
+
+    if ($Region -eq 'disabled' -or [string]::IsNullOrWhiteSpace($Region)) { return @() }
+
+    $regionMap = @{
+        'england-and-wales' = 'england-and-wales'
+        'scotland'          = 'scotland'
+        'northern-ireland'  = 'northern-ireland'
+    }
+    $apiRegion = if ($regionMap.ContainsKey($Region)) { $regionMap[$Region] } else { 'england-and-wales' }
+    $configKey = 'BANK_HOLIDAYS_' + ($apiRegion.ToUpper() -replace '-', '_')
+    $today     = (Get-Date).Date
+
+    # Load stored dates from config and prune any that are in the past
+    $cfg    = Load-Config
+    $raw    = if ($cfg[$configKey]) { @($cfg[$configKey] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) } else { @() }
+    $future = @($raw | Where-Object {
+        $dt = [DateTime]::MinValue
+        [DateTime]::TryParseExact($_, 'yyyy-MM-dd', $null, [System.Globalization.DateTimeStyles]::None, [ref]$dt) -and $dt -ge $today
+    })
+
+    if ($future.Count -lt $raw.Count) {
+        $cfg[$configKey] = $future -join ','
+        ($cfg.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) | Set-Content $configFile
+        Write-Log "Pruned $($raw.Count - $future.Count) past bank holiday date(s) from config."
+    }
+
+    if ($future.Count -gt 0) { return $future }
+
+    # Config is empty — fetch from the API and save future dates
+    try {
+        $json    = Invoke-RestMethod 'https://www.gov.uk/bank-holidays.json' -TimeoutSec 10
+        $fetched = @($json.$apiRegion.events | ForEach-Object { $_.date } | Where-Object {
+            $dt = [DateTime]::MinValue
+            [DateTime]::TryParseExact($_, 'yyyy-MM-dd', $null, [System.Globalization.DateTimeStyles]::None, [ref]$dt) -and $dt -ge $today
+        })
+        $cfg[$configKey] = $fetched -join ','
+        ($cfg.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) | Set-Content $configFile
+        Write-Log "Bank holidays fetched from gov.uk and saved to config ($($fetched.Count) future dates)."
+        return $fetched
+    } catch {
+        Write-Log "Could not fetch bank holidays: $_" "WARN"
+        return @()
     }
 }
 

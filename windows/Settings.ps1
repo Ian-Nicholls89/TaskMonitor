@@ -27,6 +27,19 @@ function Show-SettingsWindow {
         $dateItems = Get-ComboItemsXaml -Columns $headers
         $descItems = $dateItems
 
+        # Default look-ahead based on sheet name pattern (matches TaskLogic.ps1 defaults)
+        $defaultLookAhead = switch -Wildcard ($ws) {
+            "*Weekly*"    { 1 }
+            "*Annual*"    { 28 }
+            "*6-Monthly*" { 28 }
+            default       { 7 }
+        }
+        $savedLookAhead = if ($SavedConfig["${wsEnv}_LOOKAHEAD_DAYS"]) {
+            $SavedConfig["${wsEnv}_LOOKAHEAD_DAYS"]
+        } else {
+            $defaultLookAhead
+        }
+
         $worksheetSections += @"
                         <TextBlock Text="$escapedWsName"
                                    FontSize="15" FontWeight="Bold" Foreground="#00BCD4" Margin="0,20,0,6"/>
@@ -39,9 +52,15 @@ $dateItems
                         <TextBlock Text="TASK DESCRIPTION column:" FontSize="13" Foreground="#B0B0B0" Margin="0,0,0,4"/>
                         <ComboBox x:Name="Desc_$wsKey"
                                   Style="{StaticResource MaterialDesignOutlinedComboBox}"
-                                  FontSize="13" Padding="8,10" Margin="0,0,0,4">
+                                  FontSize="13" Padding="8,10" Margin="0,0,0,12">
 $descItems
                         </ComboBox>
+                        <TextBlock Text="LOOK-AHEAD DAYS:" FontSize="13" Foreground="#B0B0B0" Margin="0,0,0,4"/>
+                        <TextBox x:Name="LookAhead_$wsKey"
+                                 Text="$savedLookAhead"
+                                 Style="{StaticResource MaterialDesignOutlinedTextBox}"
+                                 FontSize="13" Padding="8,10" Margin="0,0,0,4"
+                                 Width="100" HorizontalAlignment="Left"/>
 "@
     }
 
@@ -130,6 +149,22 @@ $descItems
 
                     <Separator Background="#333333" Margin="0,12,0,0"/>
 
+                    <!-- Bank holidays -->
+                    <TextBlock Text="BANK HOLIDAYS" FontSize="12" FontWeight="Bold"
+                               Foreground="#888888" Margin="0,16,0,8"/>
+                    <TextBlock Text="Highlight tasks due on public holidays in amber (like non-working days)."
+                               FontSize="12" Foreground="#666688" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                    <ComboBox x:Name="BankHolidayRegion"
+                              Style="{StaticResource MaterialDesignOutlinedComboBox}"
+                              FontSize="13" Padding="8,10" Margin="0,0,0,4">
+                        <ComboBoxItem Content="Disabled" Tag="disabled"/>
+                        <ComboBoxItem Content="England &amp; Wales" Tag="england-and-wales"/>
+                        <ComboBoxItem Content="Scotland" Tag="scotland"/>
+                        <ComboBoxItem Content="Northern Ireland" Tag="northern-ireland"/>
+                    </ComboBox>
+
+                    <Separator Background="#333333" Margin="0,12,0,0"/>
+
                     <!-- Run at startup -->
                     <TextBlock Text="RUN AT STARTUP?" FontSize="12" FontWeight="Bold"
                                Foreground="#888888" Margin="0,16,0,8"/>
@@ -154,6 +189,7 @@ $descItems
 
                     <!-- Worksheet column pickers -->
 $worksheetSections
+
                 </StackPanel>
             </ScrollViewer>
 
@@ -195,7 +231,7 @@ $worksheetSections
     $traySwitch = $settingsWin.FindName("TraySwitch")
     $traySwitch.IsOn = $SavedConfig['MINIMISE_TO_TRAY'] -eq 'True'
 
-    $result = @{ Confirmed = $false; NewFilePath = $FilePath; WorksheetSettings = @{}; WorkingDays = $null; MinimiseToTray = $null }
+    $result = @{ Confirmed = $false; NewFilePath = $FilePath; WorksheetSettings = @{}; WorkingDays = $null; MinimiseToTray = $null; BankHolidayRegion = $null }
 
     # Pre-populate ComboBoxes
     foreach ($ws in $WorksheetNames) {
@@ -229,6 +265,16 @@ $worksheetSections
         if ($chk) { $chk.IsChecked = $day -in $savedWorkingDays }
     }
 
+    # Pre-populate bank holiday region
+    $bankHolidayCombo = $settingsWin.FindName("BankHolidayRegion")
+    $savedRegion = if ($SavedConfig['BANK_HOLIDAY_REGION']) { $SavedConfig['BANK_HOLIDAY_REGION'] } else { 'england-and-wales' }
+    for ($bhi = 0; $bhi -lt $bankHolidayCombo.Items.Count; $bhi++) {
+        if ($bankHolidayCombo.Items[$bhi].Tag -eq $savedRegion) {
+            $bankHolidayCombo.SelectedIndex = $bhi
+            break
+        }
+    }
+
     $browseBtn.Add_Click({
         $newPath = Select-SpreadsheetFile
         if ($newPath) {
@@ -248,13 +294,21 @@ $worksheetSections
             $wsKey   = "WS_" + ($ws -replace '[^a-zA-Z0-9]', '_')
             $headers = $wsHeaders[$ws]
             if (-not $headers) { continue }
-            $dateCombo = $settingsWin.FindName("Date_$wsKey")
-            $descCombo = $settingsWin.FindName("Desc_$wsKey")
+            $dateCombo      = $settingsWin.FindName("Date_$wsKey")
+            $descCombo      = $settingsWin.FindName("Desc_$wsKey")
+            $lookAheadBox   = $settingsWin.FindName("LookAhead_$wsKey")
+            $lookAheadVal   = -1
+            if ($lookAheadBox -and [int]::TryParse($lookAheadBox.Text.Trim(), [ref]$lookAheadVal) -and $lookAheadVal -lt 0) {
+                $lookAheadVal = 0
+            }
             $result.WorksheetSettings[$ws] = @{
-                DateCol = if ($dateCombo.SelectedIndex -ge 0) { $headers[$dateCombo.SelectedIndex] } else { $null }
-                DescCol = if ($descCombo.SelectedIndex -ge 0) { $headers[$descCombo.SelectedIndex] } else { $null }
+                DateCol      = if ($dateCombo.SelectedIndex -ge 0) { $headers[$dateCombo.SelectedIndex] } else { $null }
+                DescCol      = if ($descCombo.SelectedIndex -ge 0) { $headers[$descCombo.SelectedIndex] } else { $null }
+                LookAheadDays = $lookAheadVal
             }
         }
+        $selectedRegionItem = $bankHolidayCombo.SelectedItem
+        $result.BankHolidayRegion = if ($selectedRegionItem) { $selectedRegionItem.Tag } else { 'england-and-wales' }
         $checkedDays = @('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday') | Where-Object {
             $chk = $settingsWin.FindName("Chk$_")
             $chk -and $chk.IsChecked

@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
 set "INSTALL_DIR=%USERPROFILE%\TaskMonitor"
 set "REPO_ZIP=https://github.com/Ian-Nicholls89/TaskMonitor/archive/refs/heads/main.zip"
@@ -11,6 +11,23 @@ echo  TaskMonitor Installer
 echo  Installing to: %INSTALL_DIR%
 echo ============================================
 echo.
+
+if exist "%INSTALL_DIR%\TaskMonitor.ps1" (
+    echo TaskMonitor is already installed at %INSTALL_DIR%.
+    echo.
+    choice /C YN /N /M "Do you want to uninstall? (Y/N)"
+    if "!errorlevel!"=="1" (
+        rmdir /S /Q "%INSTALL_DIR%"
+        powershell -NoProfile -Command "$lnk = [Environment]::GetFolderPath('Desktop') + '\TaskMonitor.lnk'; if (Test-Path $lnk) { Remove-Item $lnk }"
+        echo.
+        echo TaskMonitor has been uninstalled.
+    ) else (
+        echo Uninstall cancelled.
+    )
+    echo.
+    pause
+    exit /b 0
+)
 
 echo [1/4] Downloading from GitHub...
 powershell -NoProfile -Command "Invoke-WebRequest -Uri '%REPO_ZIP%' -OutFile '%ZIP_FILE%'" 2>nul

@@ -83,7 +83,8 @@ function New-TaskItemsXaml {
     param(
         [array]$DueTasks,
         [array]$UpcomingTasks,
-        [string[]]$WorkingDays = @('Monday','Tuesday','Wednesday','Thursday','Friday')
+        [string[]]$WorkingDays = @('Monday','Tuesday','Wednesday','Thursday','Friday'),
+        [string[]]$BankHolidays = @()
     )
     $taskItemsXaml = ""
 
@@ -190,11 +191,15 @@ function New-TaskItemsXaml {
             $isNonWorkingDay = ($null -ne $task.WeekdayDue) -and
                                ($WorkingDays.Count -gt 0) -and
                                ($task.WeekdayDue.ToString() -notin $WorkingDays)
-            if ($isNonWorkingDay) {
+            $isBankHoliday = ($task.DueDate -is [DateTime]) -and
+                             ($BankHolidays.Count -gt 0) -and
+                             ($task.DueDate.ToString('yyyy-MM-dd') -in $BankHolidays)
+            if ($isNonWorkingDay -or $isBankHoliday) {
                 $upcomingBorderColor  = "#FFA726"
                 $upcomingStatusColor  = "#FFA726"
-                $weekdayLabel = [System.Security.SecurityElement]::Escape($task.WeekdayDue.ToString())
-                $nonWorkingNote = "<Run Text="" ($weekdayLabel)"" Foreground=""$upcomingStatusColor""/>"
+                $noteLabel = if ($isBankHoliday) { "Bank Holiday" } else { $task.WeekdayDue.ToString() }
+                $escapedNoteLabel = [System.Security.SecurityElement]::Escape($noteLabel)
+                $nonWorkingNote = "<Run Text="" ($escapedNoteLabel)"" Foreground=""$upcomingStatusColor""/>"
             } else {
                 $upcomingBorderColor  = "#00BCD4"
                 $upcomingStatusColor  = "#69F0AE"
@@ -392,7 +397,9 @@ function Show-TaskWindow {
         param($panel, $due, $upcoming)
         $wdStr = $loadState.SavedConfig['WORKING_DAYS']
         $workingDays = if ($wdStr) { @($wdStr -split ',' | ForEach-Object { $_.Trim() }) } else { @('Monday','Tuesday','Wednesday','Thursday','Friday') }
-        $xmlStr = New-TaskItemsXaml -DueTasks $due -UpcomingTasks $upcoming -WorkingDays $workingDays
+        $bhRegion = if ($loadState.SavedConfig['BANK_HOLIDAY_REGION']) { $loadState.SavedConfig['BANK_HOLIDAY_REGION'] } else { 'england-and-wales' }
+        $bankHolidays = @(Get-BankHolidays -Region $bhRegion)
+        $xmlStr = New-TaskItemsXaml -DueTasks $due -UpcomingTasks $upcoming -WorkingDays $workingDays -BankHolidays $bankHolidays
         $wpfNs  = 'xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"'
         $temp   = [System.Windows.Markup.XamlReader]::Parse("<StackPanel $wpfNs>$xmlStr</StackPanel>")
         $panel.Children.Clear()
@@ -525,6 +532,7 @@ function Show-TaskWindow {
         # Shared: start fact/tip ticker in the bottom strip (shown for both tasks and no-tasks views)
         $tips = @(
             "Tip: Set your working days in settings so TaskMonitor can warn you when a due date falls on a non-working day.",
+            "Tip: You can set your bank holiday location in the settings so that tasks which fall on these days are highlighed as a non-working day",
             "Tip: Completed a task? Hit the tick button to update your spreadsheet and your list immediately.",
             "Tip: You can open your spreadsheet directly from the toolbar if you need to. No need to hunt for the file!",
             "Tip: Overdue tasks show in red, upcoming in blue. Non-working day tasks are highlighted orange, and others are highlighted yellow.",
@@ -558,6 +566,8 @@ function Show-TaskWindow {
         $loadState.Loading       = $true
         $resultsPanel.Visibility = [System.Windows.Visibility]::Collapsed
         $loadingPanel.Visibility = [System.Windows.Visibility]::Visible
+        $window.SizeToContent    = [System.Windows.SizeToContent]::Manual
+        $window.SizeToContent    = [System.Windows.SizeToContent]::Height
         $settingsBtn.IsEnabled   = $false
         $refreshBtn.IsEnabled    = $false
         $loadingStatus.Text      = "Refreshing..."
@@ -578,13 +588,20 @@ function Show-TaskWindow {
                 $dc    = $latestConfig["${wsEnv}_DATE_COLUMN"]
                 $dsc   = $latestConfig["${wsEnv}_DESCRIPTION_COLUMN"]
                 if (-not $dc -or -not $dsc) { continue }
-                $r = Get-DueTasks -Data $sr.Data -DateColumn $dc -DescriptionColumn $dsc -worksheetName $ws
+                $lookAheadR = -1
+                if ($latestConfig["${wsEnv}_LOOKAHEAD_DAYS"]) {
+                    $lookAheadR = [int]$latestConfig["${wsEnv}_LOOKAHEAD_DAYS"]
+                }
+                $r = Get-DueTasks -Data $sr.Data -DateColumn $dc -DescriptionColumn $dsc -worksheetName $ws `
+                                  -LookAheadDays $lookAheadR
                 foreach ($t in $r.Due)      { $t['Worksheet'] = $ws; $newDue.Add($t) }
                 foreach ($t in $r.Upcoming) { $t['Worksheet'] = $ws; $newUpcoming.Add($t) }
             } catch { continue }
         }
         $loadingPanel.Visibility = [System.Windows.Visibility]::Collapsed
         $resultsPanel.Visibility = [System.Windows.Visibility]::Visible
+        $window.SizeToContent    = [System.Windows.SizeToContent]::Manual
+        $window.SizeToContent    = [System.Windows.SizeToContent]::Height
         $settingsBtn.IsEnabled   = $true
         $openSheetBtn.IsEnabled  = $true
         $refreshBtn.IsEnabled    = $true
@@ -611,10 +628,20 @@ function Show-TaskWindow {
                            -WorksheetNames $loadState.WorksheetNames
             }
         }
-        if ($null -ne $settingsResult.WorkingDays -or $null -ne $settingsResult.MinimiseToTray) {
-            $cfg = Load-Config
-            if ($null -ne $settingsResult.WorkingDays)    { $cfg['WORKING_DAYS']     = $settingsResult.WorkingDays }
-            if ($null -ne $settingsResult.MinimiseToTray) { $cfg['MINIMISE_TO_TRAY'] = $settingsResult.MinimiseToTray.ToString() }
+        $cfg = Load-Config
+        $cfgDirty = $false
+        if ($null -ne $settingsResult.WorkingDays)    { $cfg['WORKING_DAYS']         = $settingsResult.WorkingDays;                   $cfgDirty = $true }
+        if ($null -ne $settingsResult.MinimiseToTray) { $cfg['MINIMISE_TO_TRAY']     = $settingsResult.MinimiseToTray.ToString();     $cfgDirty = $true }
+        if ($null -ne $settingsResult.BankHolidayRegion) { $cfg['BANK_HOLIDAY_REGION'] = $settingsResult.BankHolidayRegion;          $cfgDirty = $true }
+        foreach ($ws in $loadState.WorksheetNames) {
+            $wsSettings = $settingsResult.WorksheetSettings[$ws]
+            if ($wsSettings -and $wsSettings.LookAheadDays -ge 0) {
+                $wsEnvS = Get-WsEnvName $ws
+                $cfg["${wsEnvS}_LOOKAHEAD_DAYS"] = $wsSettings.LookAheadDays.ToString()
+                $cfgDirty = $true
+            }
+        }
+        if ($cfgDirty) {
             ($cfg.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) | Set-Content $configFile
             $loadState.SavedConfig = Load-Config
         }
@@ -776,8 +803,14 @@ function Show-TaskWindow {
                                     -WorksheetNames $wsNames
                                 $loadState.SavedConfig = Load-Config
                             }
+                            $wsEnvL    = Get-WsEnvName $ws
+                            $lookAhead = -1
+                            if ($loadState.SavedConfig["${wsEnvL}_LOOKAHEAD_DAYS"]) {
+                                $lookAhead = [int]$loadState.SavedConfig["${wsEnvL}_LOOKAHEAD_DAYS"]
+                            }
                             $r = Get-DueTasks -Data $sheetData -DateColumn $sel.DateCol `
-                                              -DescriptionColumn $sel.DescCol -worksheetName $ws
+                                              -DescriptionColumn $sel.DescCol -worksheetName $ws `
+                                              -LookAheadDays $lookAhead
                             foreach ($t in $r.Due)      { $t['Worksheet'] = $ws; $loadState.AllDueTasks.Add($t) }
                             foreach ($t in $r.Upcoming) { $t['Worksheet'] = $ws; $loadState.AllUpcomingTasks.Add($t) }
                         }
@@ -798,6 +831,8 @@ function Show-TaskWindow {
             $loadState.Loading       = $false
             $loadingPanel.Visibility = [System.Windows.Visibility]::Collapsed
             $resultsPanel.Visibility = [System.Windows.Visibility]::Visible
+            $window.SizeToContent    = [System.Windows.SizeToContent]::Manual
+            $window.SizeToContent    = [System.Windows.SizeToContent]::Height
             $settingsBtn.IsEnabled   = $true
             $openSheetBtn.IsEnabled  = $true
             $refreshBtn.IsEnabled    = $true
